@@ -1,62 +1,68 @@
-import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
-import pandas as pd
 import time
+import pandas as pd
 
-offset = 0
-products_per_page = 72
+# Set up Selenium
+options = Options()
+options.add_argument("--headless")
+options.add_argument("--window-size=1920,1080")
+options.add_argument("user-agent=Mozilla/5.0")
+
+driver = webdriver.Chrome(options=options)
+
+base_url = "https://www.jdsports.co.uk/men/mens-footwear/"
 data = []
+page = 1
 
 while True:
-    url = f"https://www.jdsports.co.uk/men/mens-footwear/?from={offset}&max=204"
-    page = requests.get(url, headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/114.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Referer": "https://www.jdsports.co.uk/",
-    "Connection": "keep-alive",
-})
-    soup = BeautifulSoup(page.text, "html.parser")
+    url = f"{base_url}?from={(page - 1) * 72}&max=204"
+    print(f"Scraping page {page}: {url}")
+    driver.get(url)
+    time.sleep(4)
 
+    soup = BeautifulSoup(driver.page_source, "html.parser")
     trainers = soup.find_all("li", class_="productListItem")
-    
-    if not trainers:  # No more products
+
+    if not trainers:
         break
+
     for trainer in trainers:
-        trainer_list = {}
+        item = {}
+        title_tag = trainer.find("span", class_="itemTitle")
+        price_tag = trainer.find("span", class_="pri")
+        link_tag = title_tag.find("a") if title_tag else None
 
-        name = trainer.find("span", class_="itemTitle")
-        price = trainer.find("span", class_="pri")
-        colours_div = trainer.find("div", class_="moreColours")
-        sizes_div = trainer.find("div", class_="availableSizes")
+        if title_tag and price_tag and link_tag:
+            item["Name"] = link_tag.text.strip()
+            item["Price"] = price_tag.text.strip()
 
-        if name and price:
-            trainer_list["Name"] = name.text.strip()
-            trainer_list["Price"] = price.text.strip()
+            # Go to product detail page
+            product_url = "https://www.jdsports.co.uk" + link_tag["href"]
+            driver.get(product_url)
+            time.sleep(3)
 
-            if colours_div: 
-                colour_spans = colours_div.find_all("span")
-                colours = [span.get("title") for span in colour_spans if span.get("title")]
-                
-                trainer_list["Colours"] = ", ".join(colours)
-            else: 
-                trainer_list["Colours"] = "Default"
+            product_soup = BeautifulSoup(driver.page_source, "html.parser")
 
-            if sizes_div:
-                size_spans= sizes_div.find_all("span")
-                sizes = [span.text.strip() for span in size_spans]
-                trainer_list["Sizes"] = ", ".join(sizes)
-            else:
-                trainer_list["Sizes"] = "N/A"
+            # Extract colour titles from img tags
+            colour_imgs = product_soup.find_all("img", title=True)
+            colours = {img["title"].strip() for img in colour_imgs if "variantThumb" in img.get("class", [])}
+            item["Colours"] = ", ".join(colours) if colours else "N/A"
 
-            data.append(trainer_list)
-        
-    offset += products_per_page
-    time.sleep(1)  # Be nice to the server
+            # Extract shoe sizes from buttons with data-size attribute
+            size_buttons = product_soup.find_all("button", {"data-size": True})
+            sizes = [btn["data-size"].strip() for btn in size_buttons if btn.get("data-stock") == "1"]
+            item["Sizes"] = ", ".join(sizes) if sizes else "N/A"
 
-print(page.status_code)
-# df = pd.DataFrame(data)
-# df.to_csv("trainers.csv", index=False)
+            data.append(item)
+
+    page += 1
+    time.sleep(2)
+
+driver.quit()
+
+# Save data
+df = pd.DataFrame(data)
+df.to_csv("jd_trainers_with_colours_and_sizes.csv", index=False)
+print("Done. Data saved to jd_trainers_with_colours_and_sizes.csv")
